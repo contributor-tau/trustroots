@@ -65,6 +65,14 @@ class TrustrootsBrowserTest {
         )
     }
 
+    @Test
+    fun webViewSessionCookieKeepsTheServerCookieAttributes() {
+        assertEquals(
+            "connect.sid=session-value; Path=/; Secure; HttpOnly; SameSite=Lax",
+            webViewSessionCookie("connect.sid=session-value"),
+        )
+    }
+
     @Test fun recognisesBareHitchwikiAndCaseInsensitiveHosts() {
         assertTrue(BrowserLink.parse("https://hitchwiki.org/")?.canEmbed == true)
         assertTrue(BrowserLink.parse("HTTPS://WWW.TRUSTROOTS.ORG/")?.canEmbed == true)
