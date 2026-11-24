@@ -203,6 +203,12 @@ internal fun cookiePairsForWebView(cookieHeader: String): List<String> =
         .map { it.trim() }
         .filter { it.contains('=') && !it.startsWith("Path=", true) && !it.startsWith("Domain=", true) }
 
+/**
+ * Browser routes are HTTPS-only (see [BrowserLink]), so the copy given to the WebView keeps the
+ * attributes the Trustroots server sets on its session cookie instead of the bare name and value.
+ */
+internal fun webViewSessionCookie(pair: String): String = "$pair; Path=/; Secure; HttpOnly; SameSite=Lax"
+
 internal fun applyBrowserSessionCookie(url: String, cookieHeader: String?) {
     if (cookieHeader.isNullOrBlank()) return
     val uri = runCatching { URI(url) }.getOrNull() ?: return
@@ -212,7 +218,7 @@ internal fun applyBrowserSessionCookie(url: String, cookieHeader: String?) {
     val manager = CookieManager.getInstance()
     manager.setAcceptCookie(true)
     cookiePairsForWebView(cookieHeader).forEach { pair ->
-        manager.setCookie(origin, pair)
+        manager.setCookie(origin, webViewSessionCookie(pair))
     }
     manager.flush()
 }
