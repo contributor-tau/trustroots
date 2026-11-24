@@ -17,6 +17,9 @@ import org.trustroots.shared.ui.PilotConnections
 import org.trustroots.shared.ui.PilotMapPin
 import org.trustroots.shared.ui.PilotNote
 
+/** Messages requested per conversation page; a full page means older messages may follow. */
+internal const val CONVERSATION_PAGE_SIZE = 100
+
 data class MobileMember(
     val username: String,
     val displayName: String,
@@ -584,11 +587,13 @@ class MobileApiClient(
             }
         }
 
-    suspend fun conversation(session: MemberSession, memberID: String): Result<List<DirectMessage>> =
+    /** Loads one page of a conversation, newest first. Page 1 keeps the offline-cached path. */
+    suspend fun conversation(session: MemberSession, memberID: String, page: Int): Result<List<DirectMessage>> =
         withContext(Dispatchers.IO) {
             runCatching {
+                val pageQuery = if (page > 1) "&page=$page" else ""
                 parseMessages(JSONArray(jsonRequest(
-                    "/api/messages/${encode(memberID)}?limit=100", "GET",
+                    "/api/messages/${encode(memberID)}?limit=$CONVERSATION_PAGE_SIZE$pageQuery", "GET",
                     session = session,
                 ).body))
             }

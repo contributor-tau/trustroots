@@ -231,6 +231,34 @@ internal fun MessageConversationEntryScreen(
                             }
                         }
                     }
+                    // The list is reversed, so the last item sits above the oldest loaded message.
+                    if (state.hasEarlierMessages) {
+                        item(key = "conversation-earlier") {
+                            Column(
+                                Modifier.fillMaxWidth().padding(vertical = 8.dp)
+                                    .semantics { liveRegion = LiveRegionMode.Polite },
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
+                                state.earlierFailure?.let { failure ->
+                                    Text(
+                                        resolveFailureMessage(failure),
+                                        color = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.testTag("conversationEarlierFailure"),
+                                    )
+                                }
+                                if (state.isLoadingEarlier) {
+                                    CircularProgressIndicator(Modifier.testTag("conversationEarlierLoading"))
+                                } else {
+                                    TextButton(
+                                        onClick = { model.onEvent(MessageConversationEvent.LoadEarlier) },
+                                        modifier = Modifier.testTag("conversationLoadEarlier"),
+                                    ) {
+                                        Text(stringResource(R.string.screen_conversation_load_earlier))
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
             HorizontalDivider(Modifier.padding(vertical = 8.dp))

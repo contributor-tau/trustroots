@@ -11,6 +11,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import org.trustroots.android.api.CONVERSATION_PAGE_SIZE
 import org.trustroots.android.api.ConversationRecipient
 import org.trustroots.android.api.DirectMessage
 import org.trustroots.android.api.MemberSession
@@ -27,7 +28,8 @@ internal interface MessageConversationRepository {
     fun updateSession(session: MemberSession): Boolean = false
     fun updateApi(api: MobileApiClient): Boolean = false
     suspend fun member(memberID: String): Result<ConversationRecipient>
-    suspend fun messages(memberID: String): Result<List<DirectMessage>>
+    /** Returns one page of the conversation, newest first, starting from page 1. */
+    suspend fun messages(memberID: String, page: Int): Result<List<DirectMessage>>
     suspend fun send(memberID: String, content: String): Result<DirectMessage>
     fun loadDraft(selfUsername: String, otherKey: String): String
     fun saveDraft(selfUsername: String, otherKey: String, value: String)
@@ -57,7 +59,7 @@ internal class MobileApiMessageConversationRepository(
     }
 
     override suspend fun member(memberID: String) = api.messageMember(session, memberID)
-    override suspend fun messages(memberID: String) = api.conversation(session, memberID)
+    override suspend fun messages(memberID: String, page: Int) = api.conversation(session, memberID, page)
     override suspend fun send(memberID: String, content: String) = api.sendMessage(session, memberID, content)
     override fun loadDraft(selfUsername: String, otherKey: String) = drafts.load(selfUsername, otherKey)
     override fun saveDraft(selfUsername: String, otherKey: String, value: String) =
@@ -79,6 +81,9 @@ internal data class MessageConversationUiState(
     val failure: UiFailure? = null,
     val pendingSessionInvalidation: ConversationSessionInvalidation? = null,
     val currentUsername: String = "",
+    val hasEarlierMessages: Boolean = false,
+    val isLoadingEarlier: Boolean = false,
+    val earlierFailure: UiFailure? = null,
 ) {
     val showQuickReply: Boolean
         get() = messagesLoaded && !loadFailed && failure == null && messages.isNotEmpty() &&
@@ -87,6 +92,7 @@ internal data class MessageConversationUiState(
 
 internal sealed interface MessageConversationEvent {
     data object Retry : MessageConversationEvent
+    data object LoadEarlier : MessageConversationEvent
     data class DraftChanged(val value: String) : MessageConversationEvent
     data class Send(val content: String) : MessageConversationEvent
     data class QuickReply(val content: String) : MessageConversationEvent
@@ -103,6 +109,7 @@ internal class MessageConversationViewModel(
     private val requestScope = scope ?: viewModelScope
     private val loadRequest = LatestRequest(requestScope)
     private val sendRequest = LatestRequest(requestScope)
+    private val earlierRequest = LatestRequest(requestScope)
     private val mutableState = MutableStateFlow(
         MessageConversationUiState(currentUsername = initialSession.member.username),
     )
@@ -111,12 +118,14 @@ internal class MessageConversationViewModel(
     private var session = initialSession
     private var invalidationID = 0L
     private var invalidationEmitted = false
+    private var nextEarlierPage = 2
 
     init { load() }
 
     fun onEvent(event: MessageConversationEvent) {
         when (event) {
             MessageConversationEvent.Retry -> if (!mutableState.value.isSending) load()
+            MessageConversationEvent.LoadEarlier -> loadEarlier()
             is MessageConversationEvent.DraftChanged -> updateDraft(event.value)
             is MessageConversationEvent.Send -> send(event.content)
             is MessageConversationEvent.QuickReply -> send(event.content)
@@ -141,6 +150,7 @@ internal class MessageConversationViewModel(
     private fun refreshForEnvironmentChange() {
         loadRequest.cancel()
         sendRequest.cancel()
+        earlierRequest.cancel()
         invalidationEmitted = false
         mutableState.value = MessageConversationUiState(currentUsername = session.member.username)
         load()
@@ -171,12 +181,13 @@ internal class MessageConversationViewModel(
             currentCoroutineContext().ensureActive()
             mutableState.update { it.copy(member = member, draft = draft) }
             currentCoroutineContext().ensureActive()
-            val messageResult = requestResult { repository.messages(memberID) }
+            val messageResult = requestResult { repository.messages(memberID, 1) }
             val error = messageResult.exceptionOrNull()
             if (error != null) {
                 fail(error, UiFailureFallback.LOAD_CONVERSATION)
             } else {
                 val loadedMessages = messageResult.getOrThrow()
+                nextEarlierPage = 2
                 mutableState.update {
                     val messagesAddedWhileLoading = it.messages.filterNot { message -> message.id in messageIDsAtLoadStart }
                     val addedIDs = messagesAddedWhileLoading.mapTo(mutableSetOf()) { message -> message.id }
@@ -185,8 +196,38 @@ internal class MessageConversationViewModel(
                         isLoading = false,
                         messagesLoaded = true,
                         loadFailed = false,
+                        hasEarlierMessages = loadedMessages.size >= CONVERSATION_PAGE_SIZE,
                     )
                 }
+            }
+        }
+    }
+
+    private fun loadEarlier() {
+        val current = mutableState.value
+        if (!current.hasEarlierMessages || current.isLoadingEarlier || invalidationEmitted) return
+        val page = nextEarlierPage
+        earlierRequest.launch {
+            mutableState.update { it.copy(isLoadingEarlier = true, earlierFailure = null) }
+            currentCoroutineContext().ensureActive()
+            val result = requestResult { repository.messages(memberID, page) }
+            val error = result.exceptionOrNull()
+            if (error != null) {
+                if (error.isAuthenticationFailure()) emitSessionInvalidation()
+                else mutableState.update {
+                    it.copy(isLoadingEarlier = false, earlierFailure = error.toUiFailure(UiFailureFallback.LOAD_CONVERSATION))
+                }
+                return@launch
+            }
+            val earlier = result.getOrThrow()
+            nextEarlierPage = page + 1
+            mutableState.update {
+                val knownIDs = it.messages.mapTo(mutableSetOf()) { message -> message.id }
+                it.copy(
+                    messages = it.messages + earlier.filterNot { message -> message.id in knownIDs },
+                    hasEarlierMessages = earlier.size >= CONVERSATION_PAGE_SIZE,
+                    isLoadingEarlier = false,
+                )
             }
         }
     }
@@ -229,7 +270,7 @@ internal class MessageConversationViewModel(
         invalidationEmitted = true
         mutableState.update {
             it.copy(isLoading = false, messagesLoaded = true, loadFailed = false, isSending = false,
-                pendingSessionInvalidation = ConversationSessionInvalidation(++invalidationID))
+                isLoadingEarlier = false, pendingSessionInvalidation = ConversationSessionInvalidation(++invalidationID))
         }
     }
 
@@ -237,6 +278,7 @@ internal class MessageConversationViewModel(
     override fun onCleared() {
         loadRequest.cancel()
         sendRequest.cancel()
+        earlierRequest.cancel()
         mutableState.value = MessageConversationUiState(isLoading = false)
         super.onCleared()
     }

@@ -20,6 +20,7 @@
     <string name="screen_conversation_loading_description">Please wait while messages are loaded.</string>
     <string name="screen_conversation_empty_title">No messages yet</string>
     <string name="screen_conversation_empty_description">Start the conversation by writing a message.</string>
+    <string name="screen_conversation_load_earlier">Load earlier messages</string>
     <string name="screen_profile">Profile</string>
     <string name="screen_quick_reply_host_yes">Yes, I can host!</string>
     <string name="screen_quick_reply_host_no">Sorry I can\'t host</string>

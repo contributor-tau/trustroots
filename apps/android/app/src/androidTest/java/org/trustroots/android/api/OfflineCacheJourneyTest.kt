@@ -203,11 +203,11 @@ class OfflineCacheJourneyTest {
         val session = MemberSession("connect.sid=example", MobileMember(account, "Example Member"))
         try {
             assertEquals("A private greeting", MobileApiClient(base, cache, account)
-                .conversation(session, "member-one").getOrThrow().single().content)
+                .conversation(session, "member-one", 1).getOrThrow().single().content)
             responder.join(1_000)
             server.close()
             val restarted = MobileApiClient(base, cache, account)
-            assertEquals("A private greeting", restarted.conversation(session, "member-one")
+            assertEquals("A private greeting", restarted.conversation(session, "member-one", 1)
                 .getOrThrow().single().content)
             assertNotNull(restarted.offlineSavedAt.value)
             val files = File(context.noBackupFilesDir, "response-cache").walkTopDown()
