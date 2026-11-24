@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.SharedPreferences
 import android.util.Base64
+import android.webkit.CookieManager
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.IOException
@@ -171,6 +172,25 @@ class SecureMobileSessionStoreTest {
             assertEquals(saved, operations(local.baseURL).loadSession())
             assertEquals(saved, store.load())
         }
+    }
+
+    @Test
+    fun clearingBrowserDataRemovesEmbeddedSiteCookies() {
+        val origin = "https://browser-fixture.example.test"
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            val manager = CookieManager.getInstance()
+            manager.setCookie(origin, "fictional_session=fictional; Path=/; Secure; HttpOnly")
+            manager.flush()
+            assertTrue(manager.getCookie(origin).orEmpty().contains("fictional_session=fictional"))
+
+            operations("https://example.invalid").clearBrowserData()
+        }
+        // Cookie removal completes asynchronously on WebView's cookie thread.
+        val deadline = System.currentTimeMillis() + 5_000
+        while (!CookieManager.getInstance().getCookie(origin).isNullOrEmpty() &&
+            System.currentTimeMillis() < deadline
+        ) Thread.sleep(50)
+        assertTrue(CookieManager.getInstance().getCookie(origin).isNullOrEmpty())
     }
 
     private fun operations(backendURL: String) = AndroidAppSessionOperations(
