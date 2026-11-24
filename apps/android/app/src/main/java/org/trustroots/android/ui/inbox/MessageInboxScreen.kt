@@ -153,7 +153,10 @@ internal fun MessageInboxScreen(
                     contentPadding = contentPadding,
                     scrollBehavior = scrollBehavior,
                     listState = listState,
-                    onOpenConversation = pushConversation,
+                    onOpenConversation = { memberID ->
+                        model.onEvent(InboxEvent.ConversationOpened(memberID))
+                        pushConversation(memberID)
+                    },
                     onOpenProfile = pushProfile,
                     enableMessageAlerts = enableMessageAlerts,
                     isMessageAlertsEnabled = isMessageAlertsEnabled,

@@ -93,6 +93,8 @@ internal sealed interface InboxEvent {
     data object Opened : InboxEvent
     data object Retry : InboxEvent
     data object ReturnFromConversation : InboxEvent
+    /** Opening a conversation marks it read on the server without changing its place in the inbox. */
+    data class ConversationOpened(val memberID: String) : InboxEvent
     data class SessionChanged(val session: MemberSession) : InboxEvent
     data class SessionInvalidationDelivered(val id: Long) : InboxEvent
 }
@@ -136,6 +138,11 @@ internal class InboxViewModel(
             }
             InboxEvent.Retry -> load(restart = false)
             InboxEvent.ReturnFromConversation -> load(restart = true)
+            is InboxEvent.ConversationOpened -> mutableState.update { current ->
+                current.copy(threads = current.threads.map { thread ->
+                    if (thread.otherMember.id == event.memberID) thread.copy(read = true) else thread
+                })
+            }
             is InboxEvent.SessionChanged -> updateSession(event.session)
             is InboxEvent.SessionInvalidationDelivered -> mutableState.update { current ->
                 if (current.pendingSessionInvalidation?.id == event.id) {
@@ -178,6 +185,12 @@ internal class InboxViewModel(
         if (sessionInvalidationEmitted || (current.isLoading && !restart)) return
 
         val startPage = if (restart) 1 else current.failedPage ?: current.nextPage
+        // The inbox is newest first, so a refresh of a complete list can stop at the first
+        // full page that ends with an unchanged thread and keep the older rows it already has.
+        val knownThreads = if (!resetState && current.hasLoaded && !current.isLoading && current.failedPage == null) {
+            current.threads
+        } else emptyList()
+        val unchangedThreads = knownThreads.toSet()
         request.launch {
             if (resetState) mutableState.value = InboxUiState(filter = initialFilter)
             currentCoroutineContext().ensureActive()
@@ -225,7 +238,12 @@ internal class InboxViewModel(
                     )
                 }
                 currentCoroutineContext().ensureActive()
-                if (batch.size < PAGE_SIZE) {
+                val lastPage = batch.size < PAGE_SIZE
+                val reachedUnchangedThreads = !lastPage && batch.last() in unchangedThreads
+                if (lastPage || reachedUnchangedThreads) {
+                    if (reachedUnchangedThreads) mutableState.update { before ->
+                        before.copy(threads = (before.threads + knownThreads).distinctBy(MessageThread::id))
+                    }
                     lastLoadedAt = now()
                     cache.threads = mutableState.value.threads
                     cache.loadedAt = lastLoadedAt
