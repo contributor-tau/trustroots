@@ -1,5 +1,7 @@
 package org.trustroots.android.ui.session
 
+import android.webkit.CookieManager
+import android.webkit.WebStorage
 import androidx.annotation.MainThread
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -76,6 +78,8 @@ internal interface AppSessionOperations {
     @MainThread fun clearResponseCache(backendURL: String, username: String)
     @MainThread fun clearSignInDestination()
     @MainThread fun clearShellAccount()
+    /** Removes cookies and site storage that embedded pages kept for the signed-out member. */
+    @MainThread fun clearBrowserData()
 }
 
 internal class AndroidAppSessionOperations(
@@ -105,6 +109,16 @@ internal class AndroidAppSessionOperations(
         responseCache.clear(backendURL, username)
     override fun clearSignInDestination() = signInStoreHolder.clearDestination()
     override fun clearShellAccount() = shellGraphStore.clearAccount()
+    override fun clearBrowserData() {
+        // A device without a usable WebView has no embedded browser data to remove.
+        runCatching {
+            CookieManager.getInstance().apply {
+                removeAllCookies(null)
+                flush()
+            }
+            WebStorage.getInstance().deleteAllData()
+        }
+    }
 }
 
 internal class AppSessionViewModel(
@@ -185,6 +199,7 @@ internal class AppSessionViewModel(
         operations.clearSession()
         operations.clearSignInDestination()
         operations.clearShellAccount()
+        operations.clearBrowserData()
         signingBackendURL = null
         mutableState.value = AppSessionUiState(
             isStarting = false,

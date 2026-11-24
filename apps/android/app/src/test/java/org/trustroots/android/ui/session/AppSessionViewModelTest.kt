@@ -264,6 +264,7 @@ class AppSessionViewModelTest {
                 "clear-session",
                 "clear-sign-in",
                 "clear-shell",
+                "clear-browser",
             ),
             operations.events,
         )
@@ -287,6 +288,7 @@ class AppSessionViewModelTest {
                 "clear-session",
                 "clear-sign-in",
                 "clear-shell",
+                "clear-browser",
             ),
             operations.events,
         )
@@ -539,6 +541,10 @@ class AppSessionViewModelTest {
 
         override fun clearShellAccount() {
             events += "clear-shell"
+        }
+
+        override fun clearBrowserData() {
+            events += "clear-browser"
         }
     }
 
