@@ -480,6 +480,112 @@ class InboxViewModelTest {
         }
     }
 
+    @Test
+    fun refreshStopsAtAnUnchangedFullPageAndKeepsOlderThreads() = withScope { scope ->
+        val older = (0..59).map { thread("thread-$it", "Neighbour $it") }
+        var refreshing = false
+        val repository = FakeInboxRepository { page ->
+            when {
+                refreshing && page == 1 ->
+                    Result.success(listOf(thread("new-thread", "Quiet Fox")) + older.take(49))
+                page == 1 -> Result.success(older.take(50))
+                page == 2 -> Result.success(older.drop(50))
+                else -> error("Unexpected page $page")
+            }
+        }
+        val model = InboxViewModel(repository, session(), scope, now = { 0L })
+        assertEquals(listOf(1, 2), repository.pages)
+
+        refreshing = true
+        model.onEvent(InboxEvent.ReturnFromConversation)
+
+        assertEquals(listOf(1, 2, 1), repository.pages)
+        assertEquals(listOf("new-thread") + older.map(MessageThread::id), model.state.value.threads.map(MessageThread::id))
+        assertFalse(model.state.value.isLoading)
+        assertTrue(model.state.value.hasLoaded)
+    }
+
+    @Test
+    fun refreshContinuesWhileAFullPageEndsWithAChangedThread() = withScope { scope ->
+        val older = (0..59).map { thread("thread-$it", "Neighbour $it") }
+        val changed = older.take(50).map { it.copy(excerpt = "A fictional newer note.") }
+        var refreshing = false
+        val repository = FakeInboxRepository { page ->
+            when {
+                refreshing && page == 1 -> Result.success(changed)
+                page == 1 -> Result.success(older.take(50))
+                page == 2 -> Result.success(older.drop(50))
+                else -> error("Unexpected page $page")
+            }
+        }
+        val model = InboxViewModel(repository, session(), scope, now = { 0L })
+
+        refreshing = true
+        model.onEvent(InboxEvent.ReturnFromConversation)
+
+        assertEquals(listOf(1, 2, 1, 2), repository.pages)
+        assertEquals(changed + older.drop(50), model.state.value.threads)
+    }
+
+    @Test
+    fun refreshAfterALaterPageFailureReloadsEveryPage() = withScope { scope ->
+        val older = (0..59).map { thread("thread-$it", "Neighbour $it") }
+        var pageTwoAttempts = 0
+        val repository = FakeInboxRepository { page ->
+            when (page) {
+                1 -> Result.success(older.take(50))
+                2 -> if (pageTwoAttempts++ == 0) {
+                    Result.failure(MobileApiException(503, serverMessage = "A fictional page failure."))
+                } else Result.success(older.drop(50))
+                else -> error("Unexpected page $page")
+            }
+        }
+        val model = InboxViewModel(repository, session(), scope, now = { 0L })
+        assertEquals(2, model.state.value.failedPage)
+
+        model.onEvent(InboxEvent.ReturnFromConversation)
+
+        assertEquals(listOf(1, 2, 1, 2), repository.pages)
+        assertEquals(older, model.state.value.threads)
+        assertNull(model.state.value.failedPage)
+    }
+
+    @Test
+    fun refreshDuringAnotherRefreshReloadsEveryPage() = withScope { scope ->
+        val older = (0..59).map { thread("thread-$it", "Neighbour $it") }
+        val pending = CompletableDeferred<Result<List<MessageThread>>>()
+        var pageOneCalls = 0
+        val repository = FakeInboxRepository { page ->
+            when (page) {
+                1 -> if (++pageOneCalls == 2) pending.await() else Result.success(older.take(50))
+                2 -> Result.success(older.drop(50))
+                else -> error("Unexpected page $page")
+            }
+        }
+        val model = InboxViewModel(repository, session(), scope, now = { 0L })
+        model.onEvent(InboxEvent.ReturnFromConversation)
+        assertTrue(model.state.value.isLoading)
+
+        model.onEvent(InboxEvent.ReturnFromConversation)
+
+        assertEquals(listOf(1, 2, 1, 1, 2), repository.pages)
+        assertEquals(older, model.state.value.threads)
+        assertFalse(model.state.value.isLoading)
+    }
+
+    @Test
+    fun openingAConversationMarksOnlyItsThreadRead() = withScope { scope ->
+        val repository = FakeInboxRepository {
+            Result.success(listOf(thread("first", "Quiet Fox"), thread("second", "Steady Owl")))
+        }
+        val model = InboxViewModel(repository, session(), scope, now = { 0L })
+
+        model.onEvent(InboxEvent.ConversationOpened("member-second"))
+
+        assertEquals(listOf(false, true), model.state.value.threads.map(MessageThread::read))
+        assertEquals(listOf(1), repository.pages)
+    }
+
     private class FakeInboxRepository(
         private val pageHandler: suspend (Int) -> Result<List<MessageThread>>,
     ) : InboxRepository {
