@@ -22,6 +22,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.trustroots.android.api.CONVERSATION_PAGE_SIZE
 import org.trustroots.android.api.DirectMessage
 import org.trustroots.android.api.ConversationRecipient
 import org.trustroots.android.api.MemberSession
@@ -696,6 +697,150 @@ class MessageConversationViewModelTest {
         )
     }
 
+    @Test
+    fun fullFirstPageOffersEarlierMessagesAndAppendsTheNextPageWithoutDuplicates() = withScope { scope ->
+        val newest = fictionalPage("newest")
+        val repository = FakeConversationRepository(
+            memberResult = Result.success(member),
+            messagesResult = Result.success(newest),
+            initialDraft = "",
+        )
+        val older = DirectMessage("older-message", "A fictional older note", incomingSender)
+        repository.earlierHandler = { Result.success(listOf(newest.last(), older)) }
+        val model = MessageConversationViewModel("member-owl", repository, session(), scope)
+
+        assertTrue(model.state.value.hasEarlierMessages)
+        model.onEvent(MessageConversationEvent.LoadEarlier)
+
+        assertEquals(listOf(2), repository.earlierPageLookups)
+        assertEquals(newest + older, model.state.value.messages)
+        assertFalse(model.state.value.hasEarlierMessages)
+        assertFalse(model.state.value.isLoadingEarlier)
+        assertNull(model.state.value.earlierFailure)
+
+        model.onEvent(MessageConversationEvent.LoadEarlier)
+        assertEquals(listOf(2), repository.earlierPageLookups)
+    }
+
+    @Test
+    fun shortFirstPageDoesNotRequestEarlierMessages() = withScope { scope ->
+        val repository = FakeConversationRepository(
+            memberResult = Result.success(member),
+            messagesResult = Result.success(listOf(incoming)),
+            initialDraft = "",
+        )
+        val model = MessageConversationViewModel("member-owl", repository, session(), scope)
+
+        assertFalse(model.state.value.hasEarlierMessages)
+        model.onEvent(MessageConversationEvent.LoadEarlier)
+
+        assertTrue(repository.earlierPageLookups.isEmpty())
+        assertEquals(listOf(incoming), model.state.value.messages)
+    }
+
+    @Test
+    fun earlierMessagesLoadOnceAtATimeAndContinueToTheFollowingPage() = withScope { scope ->
+        val repository = FakeConversationRepository(
+            memberResult = Result.success(member),
+            messagesResult = Result.success(fictionalPage("newest")),
+            initialDraft = "",
+        )
+        val secondPage = CompletableDeferred<Result<List<DirectMessage>>>()
+        repository.earlierHandler = { page ->
+            if (page == 2) secondPage.await() else Result.success(emptyList())
+        }
+        val model = MessageConversationViewModel("member-owl", repository, session(), scope)
+
+        model.onEvent(MessageConversationEvent.LoadEarlier)
+        assertTrue(model.state.value.isLoadingEarlier)
+        model.onEvent(MessageConversationEvent.LoadEarlier)
+        assertEquals(listOf(2), repository.earlierPageLookups)
+
+        secondPage.complete(Result.success(fictionalPage("older")))
+        assertFalse(model.state.value.isLoadingEarlier)
+        assertTrue(model.state.value.hasEarlierMessages)
+        assertEquals(CONVERSATION_PAGE_SIZE * 2, model.state.value.messages.size)
+
+        model.onEvent(MessageConversationEvent.LoadEarlier)
+        assertEquals(listOf(2, 3), repository.earlierPageLookups)
+        assertFalse(model.state.value.hasEarlierMessages)
+    }
+
+    @Test
+    fun earlierMessageFailureKeepsTheConversationAndAllowsAnotherAttempt() = withScope { scope ->
+        val newest = fictionalPage("newest")
+        val repository = FakeConversationRepository(
+            memberResult = Result.success(member),
+            messagesResult = Result.success(newest),
+            initialDraft = "",
+        )
+        repository.earlierHandler = { Result.failure(IOException("A fictional history outage.")) }
+        val model = MessageConversationViewModel("member-owl", repository, session(), scope)
+
+        model.onEvent(MessageConversationEvent.LoadEarlier)
+
+        assertEquals(UiFailureFallback.LOAD_CONVERSATION, model.state.value.earlierFailure?.fallback)
+        assertFalse(model.state.value.isLoadingEarlier)
+        assertTrue(model.state.value.hasEarlierMessages)
+        assertFalse(model.state.value.loadFailed)
+        assertNull(model.state.value.failure)
+        assertEquals(newest, model.state.value.messages)
+
+        val older = DirectMessage("older-message", "A fictional older note", incomingSender)
+        repository.earlierHandler = { Result.success(listOf(older)) }
+        model.onEvent(MessageConversationEvent.LoadEarlier)
+
+        assertEquals(listOf(2, 2), repository.earlierPageLookups)
+        assertNull(model.state.value.earlierFailure)
+        assertEquals(newest + older, model.state.value.messages)
+    }
+
+    @Test
+    fun expiredSessionWhileLoadingEarlierMessagesInvalidatesTheConversation() = withScope { scope ->
+        val repository = FakeConversationRepository(
+            memberResult = Result.success(member),
+            messagesResult = Result.success(fictionalPage("newest")),
+            initialDraft = "",
+        )
+        repository.earlierHandler = { Result.failure(MobileApiException(401, "Fictional session expired.")) }
+        val model = MessageConversationViewModel("member-owl", repository, session(), scope)
+
+        model.onEvent(MessageConversationEvent.LoadEarlier)
+
+        assertTrue(model.state.value.pendingSessionInvalidation != null)
+        assertFalse(model.state.value.isLoadingEarlier)
+        assertNull(model.state.value.earlierFailure)
+        assertTrue(model.state.value.hasEarlierMessages)
+
+        model.onEvent(MessageConversationEvent.LoadEarlier)
+        assertEquals(listOf(2), repository.earlierPageLookups)
+    }
+
+    @Test
+    fun sessionChangeCancelsEarlierMessagesAndStartsFromTheNewestPage() = withScope { scope ->
+        val repository = FakeConversationRepository(
+            memberResult = Result.success(member),
+            messagesResult = Result.success(fictionalPage("newest")),
+            initialDraft = "",
+        )
+        val pending = CompletableDeferred<Result<List<DirectMessage>>>()
+        repository.earlierHandler = { pending.await() }
+        val model = MessageConversationViewModel("member-owl", repository, session(), scope)
+
+        model.onEvent(MessageConversationEvent.LoadEarlier)
+        model.onEvent(MessageConversationEvent.SessionChanged(session(cookie = "connect.sid=renewed")))
+        pending.complete(Result.success(listOf(DirectMessage("stale-message", "A fictional stale note", incomingSender))))
+
+        assertEquals(2, repository.messageLookups.size)
+        assertFalse(model.state.value.isLoadingEarlier)
+        assertTrue(model.state.value.hasEarlierMessages)
+        assertTrue(model.state.value.messages.none { it.id == "stale-message" })
+    }
+
+    private fun fictionalPage(prefix: String) = List(CONVERSATION_PAGE_SIZE) { index ->
+        DirectMessage("$prefix-$index", "A fictional note $index", incomingSender)
+    }
+
     private class FakeConversationRepository(
         var memberResult: Result<ConversationRecipient>,
         private val messagesResult: Result<List<DirectMessage>>,
@@ -715,6 +860,8 @@ class MessageConversationViewModelTest {
         var memberHandler: suspend (String) -> Result<ConversationRecipient> = { memberResult }
         var messagesHandler: suspend (String) -> Result<List<DirectMessage>> = { messagesResult }
         var sendHandler: suspend (String, String) -> Result<DirectMessage> = { _, _ -> sendResult }
+        val earlierPageLookups = mutableListOf<Int>()
+        var earlierHandler: suspend (Int) -> Result<List<DirectMessage>> = { Result.success(emptyList()) }
 
         override fun updateApi(api: MobileApiClient): Boolean {
             val changed = currentApi?.backendURL?.let { it != api.backendURL } ?: false
@@ -727,7 +874,11 @@ class MessageConversationViewModelTest {
             return memberHandler(memberID)
         }
 
-        override suspend fun messages(memberID: String): Result<List<DirectMessage>> {
+        override suspend fun messages(memberID: String, page: Int): Result<List<DirectMessage>> {
+            if (page > 1) {
+                earlierPageLookups += page
+                return earlierHandler(page)
+            }
             messageLookups += memberID
             return messagesHandler(memberID)
         }

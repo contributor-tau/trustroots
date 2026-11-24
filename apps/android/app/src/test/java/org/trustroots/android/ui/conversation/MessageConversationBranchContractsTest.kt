@@ -94,7 +94,7 @@ class MessageConversationBranchContractsTest {
             return Result.success(recipient)
         }
 
-        override suspend fun messages(memberID: String): Result<List<DirectMessage>> {
+        override suspend fun messages(memberID: String, page: Int): Result<List<DirectMessage>> {
             messageLookups++
             return messageHandler()
         }

@@ -140,7 +140,7 @@ internal class SharedMemberPilotGateway(
 
     override fun conversation(memberId: String, completion: (List<PilotMessage>?, String?) -> Unit) =
         authenticated(completion) { active, requestGeneration ->
-            val result = requireClient().conversation(active, memberId)
+            val result = requireClient().conversation(active, memberId, 1)
             if (!isCurrent(active, requestGeneration)) return@authenticated
             result.fold(
                 onSuccess = { messages ->

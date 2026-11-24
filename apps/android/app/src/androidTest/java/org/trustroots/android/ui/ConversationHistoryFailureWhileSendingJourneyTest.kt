@@ -246,7 +246,7 @@ class ConversationHistoryFailureWhileSendingJourneyTest {
         override suspend fun member(memberID: String): Result<ConversationRecipient> =
             Result.success(ConversationRecipient(memberID, "quiet-fox", "Quiet Fox"))
 
-        override suspend fun messages(memberID: String): Result<List<DirectMessage>> {
+        override suspend fun messages(memberID: String, page: Int): Result<List<DirectMessage>> {
             messageCalls.incrementAndGet()
             return history.await()
         }
